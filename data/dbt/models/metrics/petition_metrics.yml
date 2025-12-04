@@ -1,0 +1,134 @@
+metrics:
+  # ===================================================================
+  # CORE PETITION METRICS
+  # ===================================================================
+
+  - name: total_petitions
+    description: "Total count of all petitions in the system"
+    type: simple
+    label: Total Petitions
+    type_params:
+      measure: petition_count
+
+  - name: total_signatures
+    description: "Total number of signatures across all petitions"
+    type: simple
+    label: Total Signatures
+    type_params:
+      measure: total_signatures
+
+  - name: average_signatures_per_petition
+    description: "Average number of signatures received per petition"
+    type: simple
+    label: Avg Signatures per Petition
+    type_params:
+      measure: avg_signatures
+
+  # ===================================================================
+  # ENGAGEMENT METRICS
+  # ===================================================================
+
+  - name: viral_petition_rate
+    description: |
+      Percentage of petitions that go viral (100K+ signatures).
+      Key metric for understanding petition success rate.
+    type: ratio
+    label: Viral Petition Rate
+    type_params:
+      numerator: petitions_reaching_debate
+      denominator: petition_count
+    filter: |
+      {{ Dimension('petition__status') }} != 'rejected'
+
+  - name: government_response_rate
+    description: |
+      Percentage of petitions that receive a government response.
+      Indicates government engagement with citizen concerns.
+    type: ratio
+    label: Government Response Rate
+    type_params:
+      numerator: petitions_with_response
+      denominator: petition_count
+
+  - name: signature_velocity
+    description: |
+      Average signatures per day since petition creation.
+      Measures how quickly petitions gain traction.
+    type: derived
+    label: Signature Velocity (sigs/day)
+    type_params:
+      expr: "total_signatures / petition_count / 30"
+      metrics:
+        - total_signatures
+        - petition_count
+
+  # ===================================================================
+  # QUALITY METRICS
+  # ===================================================================
+
+  - name: high_impact_petition_count
+    description: "Number of petitions with 10K+ signatures (high engagement)"
+    type: simple
+    label: High Impact Petitions
+    type_params:
+      measure: petition_count
+    filter: |
+      {{ Dimension('petition__signature_tier') }} IN ('High (10K-100K)', 'Viral (100K+)')
+
+  - name: low_engagement_petition_count
+    description: "Number of petitions with <1K signatures (low engagement)"
+    type: simple
+    label: Low Engagement Petitions
+    type_params:
+      measure: petition_count
+    filter: |
+      {{ Dimension('petition__signature_tier') }} = 'Low (<1K)'
+
+  # ===================================================================
+  # TREND METRICS (Time-based)
+  # ===================================================================
+
+  - name: monthly_petition_growth
+    description: |
+      Month-over-month growth rate in petition creation.
+      Indicates platform growth trends.
+    type: derived
+    label: Monthly Petition Growth
+    type_params:
+      expr: "(current_month_petitions - previous_month_petitions) / previous_month_petitions * 100"
+      metrics:
+        - total_petitions
+
+  - name: petition_success_rate
+    description: |
+      Combined metric: (viral_rate + response_rate) / 2
+      Overall measure of petition effectiveness.
+    type: derived
+    label: Petition Success Rate
+    type_params:
+      expr: "(viral_petition_rate + government_response_rate) / 2"
+      metrics:
+        - viral_petition_rate
+        - government_response_rate
+
+  # ===================================================================
+  # COHORT METRICS
+  # ===================================================================
+
+  - name: closed_petition_avg_signatures
+    description: "Average signatures for closed petitions only"
+    type: simple
+    label: Avg Signatures (Closed)
+    type_params:
+      measure: avg_signatures
+    filter: |
+      {{ Dimension('petition__status') }} = 'closed'
+
+  - name: open_petition_count
+    description: "Count of currently active (open) petitions"
+    type: simple
+    label: Active Petitions
+    type_params:
+      measure: petition_count
+    filter: |
+      {{ Dimension('petition__status') }} = 'open'

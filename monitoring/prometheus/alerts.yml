@@ -1,0 +1,132 @@
+groups:
+  # =================================================================
+  # INFRASTRUCTURE ALERTS
+  # =================================================================
+  - name: infrastructure
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been down for more than 2 minutes"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL on {{ $labels.instance }} is not responding"
+
+      - alert: PostgresHighConnections
+        expr: sum(pg_stat_database_numbackends) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL has high number of connections"
+          description: "PostgreSQL has {{ $value }} active connections (threshold: 80)"
+
+      - alert: PostgresSlowQueries
+        expr: rate(pg_stat_database_blks_read[5m]) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL has slow queries"
+          description: "High disk block reads detected: {{ $value }} blocks/sec"
+
+  # =================================================================
+  # AIRFLOW / PIPELINE ALERTS
+  # =================================================================
+  - name: airflow
+    interval: 60s
+    rules:
+      - alert: AirflowSchedulerDown
+        expr: absent(up{job="airflow-scheduler"}) or up{job="airflow-scheduler"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Airflow scheduler is not running"
+          description: "Airflow scheduler has been down for more than 3 minutes. DAGs will not execute."
+
+      - alert: AirflowWebserverDown
+        expr: absent(up{job="airflow-webserver"}) or up{job="airflow-webserver"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Airflow webserver is not accessible"
+          description: "Airflow UI has been down for more than 5 minutes"
+
+  # =================================================================
+  # DATA PIPELINE ALERTS
+  # =================================================================
+  - name: data_pipeline
+    interval: 60s
+    rules:
+      - alert: PipelineExecutionFailed
+        expr: pipeline_execution_status{status="failed"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Data pipeline {{ $labels.pipeline_name }} failed"
+          description: "Pipeline {{ $labels.pipeline_name }} has failed. Check Airflow logs."
+
+      - alert: PipelineExecutionSlow
+        expr: pipeline_execution_duration_seconds > 600
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline_name }} is running slow"
+          description: "Pipeline took {{ $value }}s to execute (threshold: 600s)"
+
+      - alert: LowDataVolume
+        expr: pipeline_rows_processed < 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low data volume detected in {{ $labels.pipeline_name }}"
+          description: "Only {{ $value }} rows processed (expected: >100). API might be down."
+
+      - alert: DataQualityFailure
+        expr: data_quality_score < 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data quality issues detected"
+          description: "Data quality score is {{ $value }} (threshold: 0.95)"
+
+  # =================================================================
+  # STORAGE ALERTS
+  # =================================================================
+  - name: storage
+    interval: 60s
+    rules:
+      - alert: MinIODown
+        expr: absent(up{job="minio"}) or up{job="minio"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MinIO object storage is down"
+          description: "MinIO has been unreachable for more than 3 minutes"
+
+      - alert: PostgresDiskSpaceHigh
+        expr: pg_database_size_bytes / (1024*1024*1024) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL database size is large"
+          description: "Database {{ $labels.datname }} is {{ $value }}GB (threshold: 10GB)"

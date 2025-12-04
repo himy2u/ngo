@@ -3,40 +3,32 @@ version: '3.8'
 x-airflow-common: &airflow-common
   image: apache/airflow:2.8.0
   environment:
-    # Airflow config
-    &DB_ENV
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql://postgres:postgres@postgres:5432/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://postgres:postgres@postgres:5432/airflow
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__MINIO__MINIO_HOST: http://minio:9000
-    AIRFLOW__MINIO__MINIO_ACCESS_KEY: minioadmin
-    AIRFLOW__MINIO__MINIO_SECRET_KEY: minioadmin
-    # MinIO config
-    MINIO_ROOT_USER: minioadmin
-    MINIO_ROOT_PASSWORD: minioadmin
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    AIRFLOW_UID: 50000
+    # MinIO config for S3-compatible storage
+    AWS_ACCESS_KEY_ID: minioadmin
+    AWS_SECRET_ACCESS_KEY: minioadmin
+    AWS_ENDPOINT_URL: http://minio:9000
   volumes:
-    - ./data/airflow_dags:/opt/airflow/dags
-    - ./data/dbt:/opt/dbt
-    - ./data/ingestion:/opt/ingestion
-    - ./data/anonymization:/opt/anonymization
-    - ./data/quality:/opt/quality
-    - ./contracts/schemas:/opt/schemas
-    - ./serving/fastapi:/opt/fastapi
-    - ./ml/models:/opt/ml/models
+    - ../data/airflow_dags:/opt/airflow/dags
+    - ../data:/opt/data
+    - ../contracts:/opt/contracts
+    - ../serving:/opt/serving
+    - ../ml:/opt/ml
   depends_on:
     postgres:
       condition: service_healthy
     minio:
       condition: service_healthy
-    vault:
-      condition: service_healthy
 
 services:
 
   # ===========================================================================
-  # DATABASE AND OBJECT STORAGE (Minimal Stack)
+  # DATABASE
   # ===========================================================================
 
   postgres:
@@ -55,11 +47,26 @@ services:
       timeout: 5s
       retries: 5
 
+  # Postgres metrics exporter for Prometheus
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres@postgres:5432/petitions?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ===========================================================================
+  # OBJECT STORAGE (S3-Compatible)
+  # ===========================================================================
+
   minio:
     image: minio/minio:latest
     ports:
       - "9000:9000"
-      - "9001:9001" # MinIO console port
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -74,33 +81,7 @@ services:
       start_period: 5s
 
   # ===========================================================================
-  # MESSAGE QUEUE
-  # ===========================================================================
-
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.4.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: confluentinc/cp-kafka:7.4.0
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
-  # ===========================================================================
-  # ORCHESTRATION AND ML
+  # ORCHESTRATION (Apache Airflow)
   # ===========================================================================
 
   airflow-init:
@@ -110,8 +91,19 @@ services:
     command:
       - -c
       - |
+        # Initialize Airflow database
         airflow db migrate
-        airflow users create --username airflow --password airflow --firstname Airflow --lastname Admin --role Admin --email admin@example.com || echo "User already exists"
+
+        # Create Airflow admin user
+        airflow users create \
+          --username airflow \
+          --password airflow \
+          --firstname Airflow \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.com || echo "User already exists"
+
+        echo "Airflow initialization complete"
     restart: "no"
 
   airflow-webserver:
@@ -128,81 +120,56 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.10.0
-    ports:
-      - "5000:5000"
-    environment:
-      MLFLOW_TRACKING_URI: http://localhost:5000
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        pip install psycopg2-binary
-        mlflow server --backend-store-uri postgresql://postgres:postgres@postgres:5432/mlflow_db --default-artifact-root s3://mlflow --host 0.0.0.0 --port 5000
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333" # HTTP/GRPC
-      - "6334:6334" # GRPC
-    volumes:
-      - qdrant_data:/qdrant/storage
-
-  # ===========================================================================
-  # SECURITY (VAULT)
-  # ===========================================================================
-
-  vault:
-    image: hashicorp/vault:latest
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: root
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-      VAULT_ADDR: http://127.0.0.1:8200
-    ports:
-      - "8200:8200"
-    cap_add:
-      - IPC_LOCK
-    command: server -dev
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
     healthcheck:
-      test: ["CMD", "vault", "status"]
-      interval: 5s
-      timeout: 5s
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 10s
+      timeout: 10s
       retries: 5
-      start_period: 10s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
 
   # ===========================================================================
-  # MONITORING
+  # MONITORING & OBSERVABILITY
   # ===========================================================================
 
   prometheus:
     image: prom/prometheus:latest
-    volumes:
-      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command: --config.file=/etc/prometheus/prometheus.yml --web.enable-remote-write-receiver
     ports:
       - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-remote-write-receiver'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - postgres-exporter
 
   grafana:
     image: grafana/grafana:latest
     ports:
       - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_INSTALL_PLUGINS: grafana-postgresql-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+      - postgres
 
 volumes:
   postgres_data:
   minio_data:
-  qdrant_data:
   prometheus_data:
   grafana_data:

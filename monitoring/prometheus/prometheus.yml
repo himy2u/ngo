@@ -1,11 +1,55 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'ngo-platform'
+    environment: 'dev'
 
+# Load alert rules
+rule_files:
+  - 'alerts.yml'
+
+# Scrape configurations
 scrape_configs:
+  # Prometheus itself
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
 
+  # PostgreSQL metrics
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'postgres:5432'
+
+  # Grafana
   - job_name: 'grafana'
     static_configs:
       - targets: ['grafana:3000']
+
+  # Airflow Webserver
+  - job_name: 'airflow-webserver'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['airflow-webserver:8080']
+
+  # Airflow Scheduler
+  - job_name: 'airflow-scheduler'
+    static_configs:
+      - targets: ['airflow-scheduler:8793']
+
+  # MinIO
+  - job_name: 'minio'
+    metrics_path: '/minio/v2/metrics/cluster'
+    scheme: http
+    static_configs:
+      - targets: ['minio:9000']
+
+  # Custom application metrics (from instrumented Python scripts)
+  - job_name: 'data-pipeline'
+    static_configs:
+      - targets: ['localhost:8000']
+    honor_labels: true

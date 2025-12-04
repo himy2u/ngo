@@ -1,0 +1,76 @@
+semantic_models:
+  - name: petitions
+    description: |
+      Core petition data with enriched dimensions for analysis.
+      This semantic model provides the foundation for petition metrics.
+
+    model: ref('silver_petitions')
+
+    defaults:
+      agg_time_dimension: created_date
+
+    entities:
+      - name: petition
+        type: primary
+        expr: petition_id
+
+    dimensions:
+      - name: created_date
+        type: time
+        type_params:
+          time_granularity: day
+
+      - name: status
+        type: categorical
+        description: "Petition status: open, closed, or rejected"
+
+      - name: signature_tier
+        type: categorical
+        description: "Categorization based on signature volume"
+
+      - name: has_government_response
+        type: categorical
+        description: "Whether petition received government response"
+
+      - name: reached_debate_threshold
+        type: categorical
+        description: "Whether petition reached debate threshold (100K signatures)"
+
+      - name: created_year
+        type: categorical
+        description: "Year the petition was created"
+
+      - name: created_month
+        type: categorical
+        description: "Month the petition was created"
+
+    measures:
+      - name: petition_count
+        description: "Total number of petitions"
+        agg: count
+        expr: petition_id
+
+      - name: total_signatures
+        description: "Total number of signatures across all petitions"
+        agg: sum
+        expr: signature_count
+
+      - name: avg_signatures
+        description: "Average number of signatures per petition"
+        agg: average
+        expr: signature_count
+
+      - name: max_signatures
+        description: "Maximum signatures on a single petition"
+        agg: max
+        expr: signature_count
+
+      - name: petitions_with_response
+        description: "Number of petitions that received government response"
+        agg: sum
+        expr: "CASE WHEN has_government_response THEN 1 ELSE 0 END"
+
+      - name: petitions_reaching_debate
+        description: "Number of petitions reaching debate threshold"
+        agg: sum
+        expr: "CASE WHEN reached_debate_threshold THEN 1 ELSE 0 END"

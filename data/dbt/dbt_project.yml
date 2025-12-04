@@ -24,3 +24,10 @@ models:
     gold:
       +materialized: table
       +schema: gold
+
+# Semantic Layer Configuration
+semantic-models:
+  - enabled: true
+
+metrics:
+  - enabled: true
