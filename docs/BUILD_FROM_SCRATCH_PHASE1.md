@@ -436,6 +436,525 @@ def send_slack_alert(context):
 
 ---
 
+## 🏗️ Architecture Clarifications (Important!)
+
+<details>
+<summary><b>Q1: What is `calculate_quality_score`? The example isn't clear.</b></summary>
+
+**Answer**: It's a function that scores data quality (0-100) based on completeness and validity.
+
+**Implementation** (`data/scripts/quality_score.py`):
+```python
+def calculate_quality_score(row: dict) -> float:
+    """
+    Calculate data quality score (0-100) based on completeness and validity.
+
+    Scoring logic:
+    - Start with 100 points
+    - Deduct 20 points for each NULL required field
+    - Deduct 10 points for each invalid value
+    - Deduct 5 points for each missing optional field
+    """
+    score = 100.0
+
+    # Required fields (20 points each)
+    required_fields = ['petition_id', 'action', 'signature_count', 'status']
+    for field in required_fields:
+        if row.get(field) is None:
+            score -= 20
+
+    # Invalid values (10 points each)
+    if row.get('signature_count', 0) < 0:
+        score -= 10  # Signatures can't be negative
+
+    if row.get('status') not in ['open', 'closed', 'rejected']:
+        score -= 10  # Invalid status
+
+    # Optional fields (5 points each)
+    optional_fields = ['created_at', 'updated_at', 'topics']
+    for field in optional_fields:
+        if row.get(field) is None:
+            score -= 5
+
+    return max(0.0, score)  # Never below 0
+```
+
+**Examples**:
+
+| Row Data | Quality Score | Reason |
+|----------|--------------|--------|
+| `{"petition_id": 1, "action": "Ban X", "signature_count": 1000, "status": "open", "created_at": "2024-01-01", "topics": ["health"]}` | **100.0** | All fields present and valid |
+| `{"petition_id": 1, "action": "Ban X", "signature_count": 1000, "status": "open"}` | **85.0** | Missing 3 optional fields (-15) |
+| `{"petition_id": 1, "action": None, "signature_count": 1000, "status": "open"}` | **80.0** | NULL in required field action (-20) |
+| `{"petition_id": 1, "action": "Ban X", "signature_count": -5, "status": "invalid"}` | **70.0** | Negative signatures (-10) + invalid status (-10) + missing fields (-10) |
+| `{"petition_id": 1, "action": None, "signature_count": -1, "status": None}` | **40.0** | Missing 3 required fields (-60) |
+
+**Usage in Pipeline**:
+```python
+# During bronze → silver transformation
+for row in bronze_petitions:
+    quality_score = calculate_quality_score(row)
+
+    if quality_score >= 80:
+        # Load to silver (high quality)
+        load_to_silver(row, quality_score=quality_score)
+    elif quality_score >= 60:
+        # Load to silver but flag for review
+        load_to_silver(row, quality_score=quality_score, flag='needs_review')
+    else:
+        # Quarantine (too low quality)
+        load_to_quarantine(row, quality_score=quality_score, reason='low_quality')
+```
+
+**Why This Matters**:
+- **Data observability**: Track quality degradation over time
+- **Downstream protection**: Don't pollute silver/gold with bad data
+- **Alerting**: Alert if average quality drops below 90%
+- **Business metrics**: "95% of our data has quality score >90"
+
+</details>
+
+<details>
+<summary><b>Q2: Where is Bronze layer stored? MinIO or Postgres?</b></summary>
+
+**Answer**: **BOTH** - this is a key FAANG pattern!
+
+### Data Storage Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    UK PARLIAMENT API                         │
+└───────────────────┬─────────────────────────────────────────┘
+                    │
+                    ↓
+    ┌───────────────────────────────────────────────────┐
+    │  STEP 1: Save Raw JSON to MinIO (S3)              │
+    │  ─────────────────────────────────────────────    │
+    │  Location: s3://bronze/petitions_20241204.json    │
+    │  Format: JSON (exactly as API returned it)        │
+    │  Purpose: Immutable audit trail, replay source    │
+    └───────────────┬───────────────────────────────────┘
+                    │
+                    ↓
+    ┌───────────────────────────────────────────────────┐
+    │  STEP 2: Parse + Load to Postgres Bronze          │
+    │  ─────────────────────────────────────────────    │
+    │  Location: postgres://petitions/bronze.petitions  │
+    │  Format: Structured table with columns            │
+    │  Purpose: Fast SQL queries, dbt transformations   │
+    └───────────────┬───────────────────────────────────┘
+                    │
+                    ↓
+    ┌───────────────────────────────────────────────────┐
+    │  dbt: Bronze → Silver → Gold                      │
+    │  ───────────────────────────────────────          │
+    │  All in Postgres (silver.*, gold.*)               │
+    └───────────────────────────────────────────────────┘
+```
+
+### Why Dual Storage?
+
+| Storage Layer | MinIO (S3) | Postgres Bronze |
+|---------------|------------|-----------------|
+| **Purpose** | Immutable archive | Queryable structured data |
+| **Format** | Raw JSON | Relational table |
+| **Query Speed** | Slow (scan files) | Fast (indexed) |
+| **Cost** | Cheap ($0.023/GB) | Expensive ($0.10/GB) |
+| **Retention** | Forever (compliance) | 6-12 months (then archive) |
+| **Use Case** | Audit trail, replay, ML training | dbt transforms, dashboards |
+| **Example** | `{"petition_id": 1, "action": "Ban X", ...}` | `SELECT * FROM bronze.petitions WHERE id=1` |
+
+### Real-World Scenario: Why This Matters
+
+**Incident**: Someone accidentally runs `DELETE FROM bronze.petitions WHERE 1=1` 😱
+
+**Recovery with dual storage**:
+```bash
+# 1. Bronze is gone from Postgres
+SELECT COUNT(*) FROM bronze.petitions;
+# Result: 0 rows
+
+# 2. But raw data still in MinIO!
+aws s3 ls s3://bronze/petitions/
+# Result: 365 JSON files (one per day)
+
+# 3. Replay from MinIO to rebuild Postgres bronze
+python data/scripts/replay_from_s3.py --start-date 2024-01-01
+
+# 4. Bronze restored in 10 minutes
+SELECT COUNT(*) FROM bronze.petitions;
+# Result: 150 rows ✅
+```
+
+**Without MinIO**: You lost all data. Game over. 🚨
+
+</details>
+
+<details>
+<summary><b>Q3: In Databricks, does data stay in Parquet/Lakehouse or database tables?</b></summary>
+
+**Answer**: **Data stays in Parquet files (Delta Lake format) on cloud storage (S3/ADLS)**
+
+### Databricks Storage Pattern (Industry Standard 2025)
+
+```
+┌────────────────────────────────────────────────────────────┐
+│         AZURE BLOB STORAGE / AWS S3 / GCS                  │
+│                                                            │
+│  abfss://data@mystorageaccount.dfs.core.windows.net/      │
+│                                                            │
+│  ├── bronze/                                               │
+│  │   └── petitions/                                        │
+│  │       ├── part-00000.parquet (1M rows)                  │
+│  │       ├── part-00001.parquet (1M rows)                  │
+│  │       └── _delta_log/                                   │
+│  │           ├── 00000.json (transaction log)              │
+│  │           └── 00001.json                                │
+│  │                                                         │
+│  ├── silver/                                               │
+│  │   └── dim_petitions/                                    │
+│  │       ├── part-00000.parquet                            │
+│  │       └── _delta_log/                                   │
+│  │                                                         │
+│  └── gold/                                                 │
+│      └── fact_petition_metrics/                            │
+│          ├── date=2024-01-01/part-00000.parquet            │
+│          ├── date=2024-01-02/part-00000.parquet            │
+│          └── _delta_log/                                   │
+└────────────────────────────────────────────────────────────┘
+                        ↑
+                        │
+            ┌───────────┴──────────┐
+            │   DATABRICKS         │
+            │   ────────────       │
+            │   • Reads Parquet    │
+            │   • SQL queries work │
+            │   • No data copy!    │
+            └──────────────────────┘
+```
+
+### Key Insights
+
+**1. Data is NOT in a traditional database**
+```sql
+-- This query in Databricks SQL...
+SELECT * FROM bronze.petitions;
+
+-- ...actually reads from:
+abfss://data@myaccount.dfs.core.windows.net/bronze/petitions/*.parquet
+```
+
+**2. Why Parquet instead of Postgres?**
+
+| Aspect | Parquet (Databricks) | Postgres |
+|--------|---------------------|----------|
+| **Scale** | Petabyte-scale | ~10TB max practical |
+| **Cost** | $0.023/GB storage | $0.10/GB storage |
+| **Query** | Spark (distributed) | Single-node SQL |
+| **Compute** | Elastic (scale to 1000s nodes) | Fixed (scale up only) |
+| **Schema evolution** | Easy (add columns) | ALTER TABLE locks |
+| **ML integration** | Native (PySpark, MLflow) | Export to files first |
+
+**3. Delta Lake = Parquet + ACID + Time Travel**
+
+```python
+# Delta Lake gives you ACID on Parquet files!
+spark.sql("""
+    DELETE FROM bronze.petitions
+    WHERE signature_count < 0
+""")
+# This creates a new parquet file + transaction log entry
+# Old parquet files kept for time travel
+
+# Time travel (30 days default)
+spark.sql("""
+    SELECT * FROM bronze.petitions
+    VERSION AS OF 10  -- Read version from 10 commits ago
+""")
+```
+
+</details>
+
+<details>
+<summary><b>Q4: What's the use of ACID and Unity Catalog if data is in files?</b></summary>
+
+**Answer**: **ACID and Unity Catalog work on files through Delta Lake's transaction log**
+
+### How ACID Works on Files (Delta Lake Magic)
+
+**Traditional Files (No ACID)** ❌:
+```bash
+# Two writers try to update same file
+Writer A: Write part-00000.parquet (10 seconds)
+Writer B: Write part-00000.parquet (10 seconds)
+# Result: File corrupted or one write lost!
+```
+
+**Delta Lake (ACID on Files)** ✅:
+```bash
+# Each write creates new file + transaction log entry
+Writer A:
+  1. Writes: part-00001.parquet
+  2. Commits to _delta_log/00001.json:
+     {
+       "add": {"path": "part-00001.parquet"},
+       "timestamp": "2024-01-01T10:00:00Z",
+       "operation": "WRITE"
+     }
+
+Writer B (happens simultaneously):
+  1. Writes: part-00002.parquet
+  2. Commits to _delta_log/00002.json:
+     {
+       "add": {"path": "part-00002.parquet"},
+       "timestamp": "2024-01-01T10:00:01Z",
+       "operation": "WRITE"
+     }
+
+# Result: Both writes succeed! No corruption.
+```
+
+### Unity Catalog on Files
+
+**Unity Catalog = Metadata Layer on Top of Storage**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   UNITY CATALOG                          │
+│                   (Metadata Store)                       │
+│                                                          │
+│  Catalog: ngo_platform_dev                               │
+│  ├── Schema: bronze                                      │
+│  │   └── Table: petitions                                │
+│  │       • Owner: data_engineer@company.com              │
+│  │       • PII Columns: [creator_name]  ← Tagged!        │
+│  │       • Grants: READ → data_analyst role              │
+│  │       • Location: abfss://.../bronze/petitions/       │
+│  │       • Format: DELTA                                 │
+│  │       • Schema: {petition_id: BIGINT, ...}            │
+│  │       • Lineage: [uk_parliament_api] ← Source         │
+│  │       • Created: 2024-01-01                           │
+│  │       • Last Updated: 2024-12-04                      │
+└──┬───────────────────────────────────────────────────────┘
+   │
+   │ Points to ↓
+   │
+┌──┴───────────────────────────────────────────────────────┐
+│         AZURE STORAGE (Actual Data)                      │
+│         abfss://.../bronze/petitions/                    │
+│         ├── part-00000.parquet                           │
+│         ├── part-00001.parquet                           │
+│         └── _delta_log/                                  │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Unity Catalog Powers (Even on Files!)
+
+**1. RBAC on Files**:
+```sql
+-- Grant permissions (Unity Catalog enforces)
+GRANT SELECT ON TABLE bronze.petitions TO data_analyst;
+
+-- When data_analyst runs this query:
+SELECT * FROM bronze.petitions;
+
+-- Unity Catalog:
+-- 1. Checks: Does data_analyst have SELECT permission? ✅
+-- 2. Checks: Any row-level security policies? Apply filters
+-- 3. Redacts: PII columns (creator_name) → NULL
+-- 4. Allows: Read from abfss://.../bronze/petitions/*.parquet
+```
+
+**2. Data Lineage (Across Files)**:
+```sql
+-- Lineage graph automatically tracked
+uk_parliament_api
+  → bronze.petitions (parquet)
+    → silver.dim_petitions (parquet)
+      → gold.fact_petition_metrics (parquet)
+        → streamlit_dashboard.py
+```
+
+**3. PII Tagging (On Parquet Columns)**:
+```sql
+-- Tag PII in Unity Catalog
+ALTER TABLE bronze.petitions
+SET TAGS ('PII' = 'creator_name,email');
+
+-- Now all queries automatically:
+-- - Audit PII access
+-- - Redact for non-privileged users
+-- - Track compliance (GDPR, CCPA)
+```
+
+### Why This is Powerful
+
+| Without Unity Catalog | With Unity Catalog |
+|---------------------|-------------------|
+| Files scattered across S3 | Centralized metadata catalog |
+| No permission controls | RBAC on every table |
+| Unknown data lineage | Automatic lineage tracking |
+| Manual PII discovery | Automated PII tagging |
+| No audit trail | Complete access logs |
+| Schema in your head | Searchable data discovery |
+
+</details>
+
+<details>
+<summary><b>Q5: If there was no structured data, would there be no dbt?</b></summary>
+
+**Answer**: **Correct! dbt requires structured/semi-structured data (tables or Parquet)**
+
+### dbt Requirements
+
+**dbt works on** ✅:
+- Relational databases (Postgres, MySQL, SQL Server)
+- Data warehouses (Snowflake, BigQuery, Redshift)
+- Lakehouse formats (Delta Lake, Iceberg) via Spark SQL
+- Semi-structured (JSON columns, nested Parquet)
+
+**dbt does NOT work on** ❌:
+- Raw text files (CSV without schema)
+- Unstructured documents (PDFs, Word docs)
+- Images, videos, audio
+- Raw logs (before parsing)
+- Binary blobs
+
+### What Happens Without Structured Data?
+
+**Scenario 1: Only raw JSON files (no schema)**
+```
+data/
+├── petition_001.json
+├── petition_002.json
+└── petition_003.json
+```
+
+**Problem**:
+- dbt can't read arbitrary JSON files
+- No SQL table to query
+- No consistent schema
+
+**Solution**:
+```python
+# FIRST: Create structure with ingestion pipeline
+# data/ingestion/load_json_to_bronze.py
+
+import json
+import psycopg2
+
+def load_json_files_to_bronze():
+    """Convert raw JSON to structured Bronze table"""
+
+    conn = psycopg2.connect("postgresql://...")
+    cursor = conn.cursor()
+
+    # Load all JSON files
+    for json_file in Path("data/raw").glob("*.json"):
+        with open(json_file) as f:
+            data = json.load(f)
+
+        # Insert into Bronze table (now structured!)
+        cursor.execute("""
+            INSERT INTO bronze.petitions
+            (petition_id, action, signature_count, status, raw_json)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            data['id'],
+            data['attributes']['action'],
+            data['attributes']['signature_count'],
+            data['attributes']['state'],
+            json.dumps(data)  # Keep raw for audit
+        ))
+
+    conn.commit()
+
+# NOW dbt can work!
+# data/dbt/models/silver/stg_petitions.sql
+SELECT
+    petition_id,
+    action,
+    signature_count,
+    CASE
+        WHEN signature_count < 1000 THEN 'Low'
+        WHEN signature_count < 10000 THEN 'Medium'
+        ELSE 'High'
+    END as signature_tier
+FROM {{ source('bronze', 'petitions') }}
+```
+
+### Real-World Example: When dbt Doesn't Help
+
+**Use Case**: Analyzing customer support emails
+
+**Data**:
+```
+emails/
+├── email_001.txt
+├── email_002.txt
+└── email_003.txt
+```
+
+**Step 1: Python/Spark for unstructured → structured**
+```python
+# BEFORE dbt: Parse emails into structure
+import spacy
+
+nlp = spacy.load("en_core_web_sm")
+
+def parse_email(email_text):
+    """Extract structure from unstructured email"""
+    doc = nlp(email_text)
+
+    return {
+        "email_id": generate_id(),
+        "sender": extract_sender(email_text),
+        "sentiment": doc.sentiment,  # Negative/Neutral/Positive
+        "entities": [ent.text for ent in doc.ents],  # Organizations, people
+        "word_count": len(doc),
+        "topics": classify_topics(doc),  # Billing, Technical, etc
+        "raw_text": email_text
+    }
+
+# Load to Bronze table
+for email_file in emails:
+    parsed = parse_email(email_file.read_text())
+    insert_into_bronze(parsed)
+```
+
+**Step 2: NOW dbt can transform**
+```sql
+-- data/dbt/models/silver/stg_email_metrics.sql
+SELECT
+    DATE(created_at) as date,
+    topic,
+    sentiment,
+    COUNT(*) as email_count,
+    AVG(word_count) as avg_length
+FROM {{ source('bronze', 'emails') }}
+GROUP BY 1, 2, 3
+```
+
+### The Pattern
+
+```
+Unstructured Data
+  ↓
+[Python/Spark/Custom Code]  ← Extract structure
+  ↓
+Bronze (Structured Tables)
+  ↓
+[dbt]  ← Clean, transform, aggregate
+  ↓
+Silver → Gold
+```
+
+**Key Insight**: dbt is a transformation tool, not an extraction tool.
+
+</details>
+
+---
+
 ## 🛠️ Setup Steps
 
 **Total Time**: ~20 minutes
