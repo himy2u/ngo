@@ -1,0 +1,167 @@
+[project]
+name = "ngo-platform"
+version = "0.1.0"
+description = "Production-grade data and AI platform for Change.org"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "NGO Platform Team" }]
+
+dependencies = [
+    # Core
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.0.0",
+
+    # Data Processing
+    "polars>=0.20.0",
+    "pyarrow>=14.0.0",
+    "deltalake>=0.14.0",
+
+    # Database
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.1.0",
+    "asyncpg>=0.29.0",
+
+    # API
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.25.0",
+    "httpx>=0.26.0",
+
+    # ML
+    "mlflow>=2.10.0",
+    "scikit-learn>=1.4.0",
+
+    # Orchestration
+    "apache-airflow>=2.8.0",
+    "pyspark>=3.5.0",
+    "spark-nlp>=5.2.0",
+
+    # Quality
+    "great-expectations>=0.18.0",
+
+    # Observability
+    "structlog>=24.1.0",
+    "opentelemetry-api>=1.22.0",
+    "opentelemetry-sdk>=1.22.0",
+    "prometheus-client>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Linting & Formatting
+    "ruff>=0.1.14",
+    "mypy>=1.8.0",
+
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-benchmark>=4.0.0",
+    "testcontainers>=3.7.0",
+    "hypothesis>=6.92.0",
+    "faker>=22.0.0",
+
+    # Security
+    "detect-secrets>=1.4.0",
+
+    # SQL
+    "sqlfluff>=2.3.0",
+
+    # dbt
+    "dbt-core>=1.7.0",
+    "dbt-postgres>=1.7.0",
+]
+
+ml = [
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "ray[default]>=2.9.0",
+    "qdrant-client>=1.7.0",
+    "whylogs>=1.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "S",      # flake8-bandit (security)
+    "T20",    # flake8-print
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "S101",   # assert usage (ok in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests (no I/O)",
+    "integration: Integration tests (requires docker)",
+    "performance: Performance benchmarks",
+    "chaos: Chaos/resilience tests",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["data", "ml", "serving"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.sqlfluff.core]
+dialect = "postgres"
+templater = "jinja"
+max_line_length = 100
+
+[tool.sqlfluff.rules.capitalisation.keywords]
+capitalisation_policy = "upper"
+
+[tool.sqlfluff.rules.capitalisation.identifiers]
+capitalisation_policy = "lower"
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "data",
+    "serving",
+    "ml",
+]

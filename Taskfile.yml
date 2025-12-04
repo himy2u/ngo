@@ -1,0 +1,327 @@
+# https://taskfile.dev
+version: "3"
+
+vars:
+  PYTHON_VERSION: "3.11"
+  COLIMA_CPU: "4"
+  COLIMA_MEMORY: "8"
+  COLIMA_DISK: "60"
+
+tasks:
+  # =============================================================================
+  # BOOTSTRAP - One-time setup
+  # =============================================================================
+  bootstrap:
+    desc: "One-time setup: install tools + dependencies"
+    cmds:
+      - task: install:brew-deps
+      - task: install:uv
+      - task: install:python-deps
+      - task: install:pre-commit
+      - task: colima:start
+    silent: false
+
+  install:brew-deps:
+    desc: "Install Homebrew dependencies (macOS)"
+    platforms: [darwin]
+    cmds:
+      - |
+        command -v colima >/dev/null 2>&1 || brew install colima
+        command -v docker >/dev/null 2>&1 || brew install docker
+        command -v task >/dev/null 2>&1 || brew install go-task
+    status:
+      - command -v colima
+      - command -v docker
+
+  install:uv:
+    desc: "Install uv package manager"
+    cmds:
+      - |
+        command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+    status:
+      - command -v uv
+
+  install:python-deps:
+    desc: "Install Python dependencies with uv"
+    cmds:
+      - uv sync --extra dev
+    sources:
+      - pyproject.toml
+      - uv.lock
+
+  install:pre-commit:
+    desc: "Install pre-commit hooks"
+    cmds:
+      - uv run pre-commit install
+    status:
+      - test -f .git/hooks/pre-commit
+
+  # =============================================================================
+  # COLIMA / DOCKER
+  # =============================================================================
+  colima:start:
+    desc: "Start Colima (Docker runtime for macOS)"
+    platforms: [darwin]
+    cmds:
+      - |
+        if ! colima status 2>/dev/null | grep -q "Running"; then
+          colima start --cpu {{.COLIMA_CPU}} --memory {{.COLIMA_MEMORY}} --disk {{.COLIMA_DISK}}
+        else
+          echo "Colima already running"
+        fi
+
+  colima:stop:
+    desc: "Stop Colima"
+    platforms: [darwin]
+    cmds:
+      - colima stop
+
+  # =============================================================================
+  # LOCAL STACK (docker-compose)
+  # =============================================================================
+  up:
+    desc: "Start full local stack"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml up -d
+      - task: up:wait
+      - echo "✅ Stack ready"
+
+  up:minimal:
+    desc: "Start minimal stack (Postgres + MinIO only)"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml up -d postgres minio
+      - task: up:wait
+
+  up:ml:
+    desc: "Start ML stack (adds MLflow + Ray)"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml up -d postgres minio mlflow ray
+      - task: up:wait
+
+  up:wait:
+    desc: "Wait for services to be healthy"
+    cmds:
+      - |
+        echo "Waiting for services..."
+        sleep 5
+        docker compose -f dev/docker-compose.yaml ps
+
+  down:
+    desc: "Stop local stack"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml down
+
+  down:clean:
+    desc: "Stop local stack and remove volumes"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml down -v
+
+  logs:
+    desc: "Tail logs from all services"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml logs -f
+
+  ps:
+    desc: "Show running services"
+    cmds:
+      - docker compose -f dev/docker-compose.yaml ps
+
+  # =============================================================================
+  # LINTING & FORMATTING
+  # =============================================================================
+  lint:
+    desc: "Run all linters"
+    cmds:
+      - task: lint:ruff
+      - task: lint:mypy
+      - task: lint:sql
+
+  lint:ruff:
+    desc: "Lint Python with ruff"
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
+
+  lint:mypy:
+    desc: "Type check with mypy"
+    cmds:
+      - uv run mypy data/ ml/ serving/ --ignore-missing-imports
+
+  lint:sql:
+    desc: "Lint SQL with sqlfluff"
+    cmds:
+      - uv run sqlfluff lint data/dbt/
+
+  format:
+    desc: "Format all code"
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .
+      - uv run sqlfluff fix data/dbt/
+
+  # =============================================================================
+  # TESTING
+  # =============================================================================
+  test:
+    desc: "Run all tests"
+    cmds:
+      - task: test:unit
+      - task: test:integration
+
+  test:unit:
+    desc: "Run unit tests (fast, no I/O)"
+    cmds:
+      - uv run pytest tests/unit -m unit -v
+
+  test:integration:
+    desc: "Run integration tests (requires docker)"
+    deps: ["up:minimal"]
+    cmds:
+      - uv run pytest tests/integration -m integration -v
+
+  test:performance:
+    desc: "Run performance benchmarks"
+    cmds:
+      - uv run pytest tests/performance -m performance --benchmark-only
+
+  test:chaos:
+    desc: "Run chaos/resilience tests"
+    deps: [up]
+    cmds:
+      - uv run pytest tests/chaos -m chaos -v
+
+  test:cov:
+    desc: "Run tests with coverage"
+    cmds:
+      - uv run pytest tests/ --cov --cov-report=html --cov-report=term
+
+  # =============================================================================
+  # DATA QUALITY
+  # =============================================================================
+  quality:
+    desc: "Run data quality checks"
+    cmds:
+      - task: quality:dbt
+      - task: quality:ge
+
+  quality:dbt:
+    desc: "Run dbt tests"
+    dir: data/dbt
+    cmds:
+      - uv run dbt deps
+      - uv run dbt build --select state:modified+
+      - uv run dbt test
+
+  quality:ge:
+    desc: "Run Great Expectations checkpoints"
+    cmds:
+      - uv run great_expectations checkpoint run default
+
+  # =============================================================================
+  # DBT
+  # =============================================================================
+  dbt:run:
+    desc: "Run dbt models"
+    dir: data/dbt
+    cmds:
+      - uv run dbt run
+
+  dbt:test:
+    desc: "Run dbt tests"
+    dir: data/dbt
+    cmds:
+      - uv run dbt test
+
+  dbt:docs:
+    desc: "Generate and serve dbt docs"
+    dir: data/dbt
+    cmds:
+      - uv run dbt docs generate
+      - uv run dbt docs serve
+
+  # =============================================================================
+  # SECURITY
+  # =============================================================================
+  security:scan:
+    desc: "Run security scans"
+    cmds:
+      - uv run detect-secrets scan --all-files --baseline .secrets.baseline
+
+  security:audit:
+    desc: "Audit dependencies for vulnerabilities"
+    cmds:
+      - uv run pip-audit
+
+  # =============================================================================
+  # GENERATORS (scaffolding)
+  # =============================================================================
+  create:pipeline:
+    desc: "Create new Airflow DAG from template"
+    cmds:
+      - |
+        echo "Creating pipeline: {{.CLI_ARGS}}"
+        cp templates/dag_template.py data/airflow_dags/{{.CLI_ARGS}}_dag.py
+        echo "Created: data/airflow_dags/{{.CLI_ARGS}}_dag.py"
+
+  create:model:
+    desc: "Create new dbt model from template"
+    cmds:
+      - |
+        echo "Creating model: {{.CLI_ARGS}}"
+        cp templates/model_template.sql data/dbt/models/{{.CLI_ARGS}}.sql
+        cp templates/model_template.yml data/dbt/models/{{.CLI_ARGS}}.yml
+        echo "Created: data/dbt/models/{{.CLI_ARGS}}.sql"
+
+  create:service:
+    desc: "Create new FastAPI service from template"
+    cmds:
+      - |
+        echo "Creating service: {{.CLI_ARGS}}"
+        mkdir -p serving/fastapi/{{.CLI_ARGS}}
+        cp templates/service_template.py serving/fastapi/{{.CLI_ARGS}}/main.py
+        echo "Created: serving/fastapi/{{.CLI_ARGS}}/main.py"
+
+  # =============================================================================
+  # CI/CD HELPERS
+  # =============================================================================
+  ci:
+    desc: "Run full CI pipeline locally"
+    cmds:
+      - task: lint
+      - task: test
+      - task: security:scan
+      - echo "✅ CI passed"
+
+  # =============================================================================
+  # CLEANUP
+  # =============================================================================
+  clean:
+    desc: "Clean generated files"
+    cmds:
+      - rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
+      - find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+      - echo "✅ Cleaned"
+
+  clean:all:
+    desc: "Clean everything including docker volumes"
+    cmds:
+      - task: clean
+      - task: down:clean
+
+  # =============================================================================
+  # LOCAL TESTING
+  # =============================================================================
+  run:pipeline:
+    desc: "Run full pipeline locally"
+    cmds:
+      - uv run python scripts/run_local.py
+
+  run:ingest:
+    desc: "Run ingestion only"
+    cmds:
+      - uv run python -m data.ingestion.fetch_petitions
+
+  run:generate:
+    desc: "Generate synthetic events"
+    cmds:
+      - uv run python -m data.ingestion.generate_events

@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: stg_petitions
+    description: "Cleaned, deduplicated petitions"
+    meta:
+      owner: "@petition-team"
+      tier: silver
+      sla_freshness_minutes: 15
+    columns:
+      - name: petition_id
+        description: "Unique petition identifier"
+        tests:
+          - unique
+          - not_null
+      - name: action
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['open', 'closed', 'rejected', 'awaiting_response', 'responded']
+      - name: signature_count
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"

@@ -1,0 +1,21 @@
+ngo_platform:
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
+      port: 5432
+      user: "{{ env_var('POSTGRES_USER', 'ngo') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'ngo_local') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'ngo') }}"
+      schema: bronze
+      threads: 4
+    ci:
+      type: postgres
+      host: localhost
+      port: 5432
+      user: ngo
+      password: ngo_local
+      dbname: ngo
+      schema: bronze
+      threads: 4
+  target: dev

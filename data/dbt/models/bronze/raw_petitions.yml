@@ -1,0 +1,25 @@
+version: 2
+
+models:
+  - name: raw_petitions
+    description: "Raw petition data from UK Parliament API"
+    meta:
+      owner: "@petition-team"
+      tier: bronze
+    columns:
+      - name: petition_id
+        description: "Unique petition identifier"
+        tests:
+          - not_null
+      - name: action
+        description: "Petition title/action text"
+        tests:
+          - not_null
+      - name: signature_count
+        description: "Current signature count"
+        tests:
+          - not_null
+      - name: creator_name
+        description: "Name of petition creator"
+        meta:
+          pii: true

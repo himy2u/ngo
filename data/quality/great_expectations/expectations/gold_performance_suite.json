@@ -1,0 +1,33 @@
+{
+  "expectation_suite_name": "gold_performance_suite",
+  "meta": {
+    "owner": "@analytics-team",
+    "tier": "gold",
+    "sla": "99.9%"
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {"min_value": 1, "max_value": 1000000}
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_unique",
+      "kwargs": {"column": "petition_id"}
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "performance_tier",
+        "value_set": ["viral", "popular", "growing", "starting"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {"column": "signatures_per_day", "min_value": 0}
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": {"column": "refreshed_at"}
+    }
+  ]
+}

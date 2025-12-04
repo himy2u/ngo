@@ -1,0 +1,28 @@
+version: 2
+
+models:
+  - name: petition_performance
+    description: "Petition performance metrics for analytics and ML"
+    meta:
+      owner: "@analytics-team"
+      tier: gold
+      sla_freshness_minutes: 60
+      consumers:
+        - analytics_dashboard
+        - ml_features
+    columns:
+      - name: petition_id
+        description: "Unique petition identifier"
+        tests:
+          - unique
+          - not_null
+      - name: performance_tier
+        description: "Categorized performance level"
+        tests:
+          - accepted_values:
+              values: ['viral', 'popular', 'growing', 'starting']
+      - name: signatures_per_day
+        description: "Average daily signature velocity"
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"

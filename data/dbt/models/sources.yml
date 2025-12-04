@@ -1,0 +1,26 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: ngo
+    schema: bronze
+    tables:
+      - name: petition_events_raw
+        description: "Raw petition events from ingestion"
+        meta:
+          owner: "@data-platform"
+        columns:
+          - name: id
+            tests:
+              - unique
+              - not_null
+          - name: payload
+            tests:
+              - not_null
+        freshness:
+          warn_after: {count: 1, period: hour}
+          error_after: {count: 6, period: hour}
+        loaded_at_field: ingested_at
+
+      - name: quarantine_petitions
+        description: "Failed petition records"

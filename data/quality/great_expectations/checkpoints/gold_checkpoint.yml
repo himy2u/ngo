@@ -1,0 +1,17 @@
+name: gold_checkpoint
+config_version: 1.0
+class_name: Checkpoint
+run_name_template: "gold_run_%Y%m%d_%H%M%S"
+validations:
+  - batch_request:
+      datasource_name: postgres
+      data_connector_name: default
+      data_asset_name: petition_performance
+    expectation_suite_name: gold_performance_suite
+action_list:
+  - name: store_validation_result
+    action:
+      class_name: StoreValidationResultAction
+  - name: update_data_docs
+    action:
+      class_name: UpdateDataDocsAction
