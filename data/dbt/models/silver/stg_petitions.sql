@@ -24,19 +24,20 @@ deduplicated AS (
 cleaned AS (
     SELECT
         petition_id,
-        TRIM(action) AS action,
-        TRIM(COALESCE(background, '')) AS background,
-        LOWER(status) AS status,
-        GREATEST(signature_count, 0) AS signature_count,
         created_at,
         updated_at,
         creator_name,
         topics,
-        ingested_at
+        ingested_at,
+        TRIM(action) AS action,
+        TRIM(COALESCE(background, '')) AS background,
+        LOWER(status) AS status,
+        GREATEST(signature_count, 0) AS signature_count
     FROM deduplicated
-    WHERE row_num = 1
-      AND petition_id IS NOT NULL
-      AND action IS NOT NULL
+    WHERE
+        row_num = 1
+        AND petition_id IS NOT NULL
+        AND action IS NOT NULL
 )
 
 SELECT * FROM cleaned

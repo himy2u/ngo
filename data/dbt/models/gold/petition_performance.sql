@@ -31,15 +31,13 @@ metrics AS (
             ELSE 'starting'
         END AS performance_tier,
 
-        CASE
-            WHEN status IN ('responded', 'awaiting_response') THEN true
-            ELSE false
-        END AS government_engaged,
+        COALESCE(status IN ('responded', 'awaiting_response'), FALSE) AS government_engaged,
 
         -- Velocity (signatures per day)
         CASE
-            WHEN EXTRACT(EPOCH FROM (updated_at - created_at)) > 0 THEN
-                signature_count / (EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400.0)
+            WHEN EXTRACT(EPOCH FROM (updated_at - created_at)) > 0
+                THEN
+                    signature_count / (EXTRACT(EPOCH FROM (updated_at - created_at)) / 86400.0)
             ELSE 0
         END AS signatures_per_day
 

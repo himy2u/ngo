@@ -26,11 +26,11 @@ CREATE TABLE IF NOT EXISTS bronze.quarantine_user_events (
 
 -- Indexes for monitoring queries
 CREATE INDEX IF NOT EXISTS idx_quarantine_petitions_failed_at
-    ON bronze.quarantine_petitions(failed_at);
+ON bronze.quarantine_petitions (failed_at);
 CREATE INDEX IF NOT EXISTS idx_quarantine_petitions_error_type
-    ON bronze.quarantine_petitions(error_type);
+ON bronze.quarantine_petitions (error_type);
 
 CREATE INDEX IF NOT EXISTS idx_quarantine_user_events_failed_at
-    ON bronze.quarantine_user_events(failed_at);
+ON bronze.quarantine_user_events (failed_at);
 CREATE INDEX IF NOT EXISTS idx_quarantine_user_events_error_type
-    ON bronze.quarantine_user_events(error_type);
+ON bronze.quarantine_user_events (error_type);

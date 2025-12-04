@@ -186,7 +186,7 @@ tasks:
 
   test:chaos:
     desc: "Run chaos/resilience tests"
-    deps: [up]
+    deps: ["up"]
     cmds:
       - uv run pytest tests/chaos -m chaos -v
 
